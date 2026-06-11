@@ -679,20 +679,22 @@ async function loadAndPlay(idx, autoplay){
     art.src='';art.style.opacity='0';
 
     if(!s.v){
-      // Si no tenemos videoId todavía (playlist de YT), buscarlo
       document.getElementById('loading-ov').style.display='none';
-      setStatus('Sin vídeo disponible',false);
-      if(autoplay) setTimeout(()=>nextSong(),1200);
+      setStatus('⚠️ Sin videoId — vuelve a cargar la lista',false);
+      toast('⚠️ Sin vídeo: '+s.t);
+      console.warn('Song missing videoId:', s);
+      if(autoplay) setTimeout(()=>nextSong(),2000);
       return;
     }
 
+    console.log('Loading YT video:', s.v, 'for song:', s.t);
     G._ytStart=3;
     loadYTApi();
     waitYTReady(()=>{
       document.getElementById('loading-ov').style.display='none';
       showYTFrame();
       createYTPlayer(s.v, 3, autoplay);
-      setStatus(autoplay?'Reproduciendo ahora':'Listo — pulsa ▶ en el vídeo', autoplay);
+      setStatus(autoplay?'Reproduciendo…':'Listo — pulsa ▶',autoplay);
       if(autoplay) document.getElementById('pp-btn').textContent='⏸';
     });
     return;
@@ -820,9 +822,10 @@ function renderSongList(){
   document.getElementById('slist').innerHTML=G.songs.map((s,i)=>{
     const ac=i===G.curIdx?'active':'';
     const num=i===G.curIdx?'♪':String(i+1);
+    const thumb=s.img?'<img class="sthumb" src="'+esc(s.img)+'" alt="">':'<div class="sthumb"></div>';
     return '<div class="srow '+ac+'" onclick="jumpTo('+i+')" id="sr'+i+'">'+
       '<div class="snum">'+num+'</div>'+
-      '<div class="sthumb"></div>'+
+      thumb+
       '<div class="sinf"><div class="stit">'+esc(s.t)+'</div><div class="sart">'+esc(s.a)+'</div></div></div>';
   }).join('');
 }
@@ -888,7 +891,7 @@ async function loadYTTracks(i){
   const r=await fetch('https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId='+pl.id+'&key='+G.ytApiKey).catch(()=>null);
   if(!r||!r.ok){toast('❌ Error');return;}
   const d=await r.json();
-  pl.songs=d.items.filter(x=>x.snippet.title!=='Deleted video'&&x.snippet.title!=='Private video').map(x=>({t:x.snippet.title,a:x.snippet.videoOwnerChannelTitle||'YouTube'}));
+  pl.songs=d.items.filter(x=>x.snippet.title!=='Deleted video'&&x.snippet.title!=='Private video').map(x=>({t:x.snippet.title,a:x.snippet.videoOwnerChannelTitle||'YouTube',v:x.snippet.resourceId&&x.snippet.resourceId.videoId||null,img:x.snippet.thumbnails&&x.snippet.thumbnails.default?x.snippet.thumbnails.default.url:''}));
   toast('✅ '+pl.songs.length+' vídeos');updateHint();
 }
 
