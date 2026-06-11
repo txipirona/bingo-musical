@@ -270,6 +270,12 @@ input[type=range].vol::-webkit-slider-thumb{-webkit-appearance:none;width:14px;h
     <button class="btn btn-sm" style="margin-left:auto" onclick="goTo(3)">Cartones</button>
   </div>
 
+  <!-- YouTube IFrame (solo visible en modo YouTube) -->
+  <div class="yt-frame-box" id="yt-frame-box">
+    <div id="yt-player-div"></div>
+  </div>
+  <div class="yt-showhide" id="yt-showhide" onclick="toggleYTFrame()">▼ Ocultar vídeo</div>
+
   <div class="player-card">
     <!-- Artwork grande con info superpuesta -->
     <div class="art-wrap" id="art-wrap">
@@ -414,7 +420,105 @@ const G={
 // Audio element único
 const AUDIO = new Audio();
 AUDIO.volume = 0.8;
-let progressTimer = null;
+
+// ── YouTube IFrame player ─────────────────────────────────
+let YTPlayer = null;
+let YTReady  = false;
+let YTVisible = true;
+
+function loadYTApi(){
+  if(document.getElementById('yt-api-scr')) return;
+  window.onYouTubeIframeAPIReady = ()=>{ YTReady=true; };
+  const s=document.createElement('script');
+  s.id='yt-api-scr';
+  s.src='https://www.youtube.com/iframe_api';
+  document.head.appendChild(s);
+}
+
+function waitYTReady(cb){
+  if(YTReady){ cb(); return; }
+  const iv=setInterval(()=>{ if(YTReady){ clearInterval(iv); cb(); } },100);
+}
+
+function createYTPlayer(videoId, startSec, autoplay){
+  if(YTPlayer){ try{ YTPlayer.destroy(); }catch(e){} YTPlayer=null; }
+  document.getElementById('yt-player-div').innerHTML='';
+  YTPlayer = new YT.Player('yt-player-div',{
+    videoId: videoId,
+    width:'100%', height:'100%',
+    playerVars:{
+      autoplay: autoplay?1:0,
+      start: startSec||3,
+      controls: 1,
+      rel: 0,
+      modestbranding: 1,
+      playsinline: 1,
+    },
+    events:{
+      onReady: e=>{
+        e.target.setVolume(G.ytVol||80);
+        if(autoplay) e.target.playVideo();
+      },
+      onStateChange: e=>{
+        if(e.data===YT.PlayerState.PLAYING){
+          setStatus('Reproduciendo ahora',true);
+          document.getElementById('pp-btn').textContent='⏸';
+          G.isPlaying=true;
+          startYTTimer();
+        }
+        if(e.data===YT.PlayerState.PAUSED){
+          setStatus('En pausa',false);
+          document.getElementById('pp-btn').textContent='▶';
+          G.isPlaying=false;
+          stopYTTimer();
+        }
+        if(e.data===YT.PlayerState.ENDED){
+          stopYTTimer();
+          setTimeout(()=>nextSong(),600);
+        }
+      },
+      onError: ()=>{
+        toast('⚠️ Vídeo no disponible, saltando…');
+        setTimeout(()=>nextSong(),1200);
+      }
+    }
+  });
+}
+
+let ytTimer=null;
+function startYTTimer(){
+  clearInterval(ytTimer);
+  ytTimer=setInterval(()=>{
+    if(!YTPlayer||typeof YTPlayer.getCurrentTime!=='function') return;
+    try{
+      const ct=YTPlayer.getCurrentTime();
+      const dur=YTPlayer.getDuration()||30;
+      const start=G._ytStart||3;
+      const elapsed=Math.max(0,ct-start);
+      const pct=(ct/dur)*100;
+      document.getElementById('prog-fill').style.width=pct+'%';
+      document.getElementById('t-cur').textContent=fmt(ct);
+      document.getElementById('t-tot').textContent=fmt(dur);
+    }catch(e){}
+  },500);
+}
+function stopYTTimer(){ clearInterval(ytTimer); }
+
+function toggleYTFrame(){
+  YTVisible=!YTVisible;
+  document.getElementById('yt-frame-box').style.display=YTVisible?'':'none';
+  document.getElementById('yt-showhide').textContent=YTVisible?'▼ Ocultar vídeo':'▶ Mostrar vídeo';
+}
+
+function showYTFrame(){
+  document.getElementById('yt-frame-box').style.display='';
+  document.getElementById('yt-showhide').style.display='';
+  YTVisible=true;
+}
+function hideYTFrame(){
+  document.getElementById('yt-frame-box').style.display='none';
+  document.getElementById('yt-showhide').style.display='none';
+}
 
 // ══════════════════════════════════════════════════════
 // UTILS
@@ -553,7 +657,7 @@ async function loadAndPlay(idx, autoplay){
   G.curIdx=idx;
   G.isPlaying=false;
 
-  // Update text UI immediately
+  // Update UI
   document.getElementById('art-title').textContent=s.t;
   document.getElementById('art-artist').textContent=s.a;
   document.getElementById('art-idx').textContent=(idx+1)+' / '+G.songs.length;
@@ -563,14 +667,44 @@ async function loadAndPlay(idx, autoplay){
   document.getElementById('pp-btn').textContent='▶';
   updateSongListUI();
 
-  // Show loading
+  // ── MODO YOUTUBE: usar IFrame API con videoId real ────────
+  if(G.mode==='yt'){
+    hideYTFrame(); // ocultar mientras carga
+    setStatus('Cargando vídeo…',false);
+    document.getElementById('loading-ov').style.display='flex';
+    document.getElementById('loading-txt').textContent='Cargando vídeo de YouTube…';
+
+    // Limpiar artwork — usamos el frame
+    const art=document.getElementById('art-img');
+    art.src='';art.style.opacity='0';
+
+    if(!s.v){
+      // Si no tenemos videoId todavía (playlist de YT), buscarlo
+      document.getElementById('loading-ov').style.display='none';
+      setStatus('Sin vídeo disponible',false);
+      if(autoplay) setTimeout(()=>nextSong(),1200);
+      return;
+    }
+
+    G._ytStart=3;
+    loadYTApi();
+    waitYTReady(()=>{
+      document.getElementById('loading-ov').style.display='none';
+      showYTFrame();
+      createYTPlayer(s.v, 3, autoplay);
+      setStatus(autoplay?'Reproduciendo ahora':'Listo — pulsa ▶ en el vídeo', autoplay);
+      if(autoplay) document.getElementById('pp-btn').textContent='⏸';
+    });
+    return;
+  }
+
+  // ── MODO DEMO/SPOTIFY: usar Deezer JSONP + HTML5 Audio ───
+  hideYTFrame();
   document.getElementById('loading-ov').style.display='flex';
   document.getElementById('loading-txt').textContent='Buscando preview…';
   setStatus('Cargando…',false);
 
-  // Fetch preview from iTunes
   const preview = await fetchPreview(s.t, s.a);
-
   document.getElementById('loading-ov').style.display='none';
 
   if(!preview||!preview.url){
@@ -582,39 +716,40 @@ async function loadAndPlay(idx, autoplay){
     return;
   }
 
-  // Update artwork
   const art=document.getElementById('art-img');
-  if(preview.artwork){
-    art.onload=()=>{art.style.opacity='1';};
-    art.src=preview.artwork;
-  } else {
-    art.style.opacity='0';
-  }
+  if(preview.artwork){ art.onload=()=>{art.style.opacity='1';}; art.src=preview.artwork; }
+  else art.style.opacity='0';
 
-  // Load audio
   AUDIO.pause();
   AUDIO.src=preview.url;
-  AUDIO.currentTime=3; // empezar en segundo 3
+  AUDIO.currentTime=3;
 
   if(autoplay){
-    try{
-      await AUDIO.play();
-    } catch(e){
-      // Autoplay bloqueado — mostrar botón play
-      setStatus('Pulsa ▶ para escuchar',false);
-      toast('Pulsa ▶ para reproducir');
-    }
+    try{ await AUDIO.play(); }
+    catch(e){ setStatus('Pulsa ▶ para escuchar',false); toast('Pulsa ▶ para reproducir'); }
   } else {
     setStatus('Listo — pulsa ▶',false);
   }
 }
 
 async function togglePlay(){
+  if(G.mode==='yt'){
+    if(!YTPlayer||typeof YTPlayer.getPlayerState!=='function'){
+      await loadAndPlay(G.curIdx,true); return;
+    }
+    const st=YTPlayer.getPlayerState();
+    if(st===1){ // playing -> pause
+      YTPlayer.pauseVideo();
+    } else { // paused/stopped -> play
+      YTPlayer.playVideo();
+    }
+    return;
+  }
+  // Demo / Spotify — HTML5 Audio
   if(G.isPlaying){
     AUDIO.pause();
   } else {
     if(!AUDIO.src||AUDIO.src===''){
-      // Cargar primera canción
       await loadAndPlay(G.curIdx,true);
     } else {
       try{
@@ -626,6 +761,10 @@ async function togglePlay(){
 }
 
 function stopAudio(){
+  if(G.mode==='yt'&&YTPlayer&&typeof YTPlayer.stopVideo==='function'){
+    try{ YTPlayer.stopVideo(); }catch(e){}
+    stopYTTimer();
+  }
   AUDIO.pause();
   AUDIO.src='';
   AUDIO.currentTime=0;
@@ -644,7 +783,12 @@ function seekAudio(e){
 }
 
 function setVol(v){
-  AUDIO.volume=parseFloat(v);
+  const vol=parseFloat(v);
+  AUDIO.volume=vol;
+  G.ytVol=Math.round(vol*100);
+  if(YTPlayer&&typeof YTPlayer.setVolume==='function'){
+    try{ YTPlayer.setVolume(G.ytVol); }catch(e){}
+  }
 }
 
 async function nextSong(){
@@ -652,6 +796,13 @@ async function nextSong(){
   await loadAndPlay(next,true);
 }
 async function prevSong(){
+  if(G.mode==='yt'){
+    if(YTPlayer&&typeof YTPlayer.getCurrentTime==='function'){
+      try{ if(YTPlayer.getCurrentTime()>5){ YTPlayer.seekTo(3,true); return; } }catch(e){}
+    }
+    const prev=(G.curIdx-1+G.songs.length)%G.songs.length;
+    await loadAndPlay(prev,true); return;
+  }
   if(AUDIO.currentTime>3){AUDIO.currentTime=3;return;}
   const prev=(G.curIdx-1+G.songs.length)%G.songs.length;
   await loadAndPlay(prev,true);
@@ -846,8 +997,10 @@ function generate(){
   document.getElementById('h3sub').textContent=nc+' cartones · '+rows+'×'+cols;
   document.getElementById('src-badge').textContent=G.mode==='sp'?'🎧 Spotify':G.mode==='yt'?'▶️ YouTube':'🎲 Deezer';
   stopAudio();
+  if(G.mode==='yt'){
+    loadYTApi(); // precargar la API
+  }
   goTo(2);
-  // Cargar primera canción (sin autoplay — esperar que el usuario pulse ▶)
   loadAndPlay(0, false);
 }
 
